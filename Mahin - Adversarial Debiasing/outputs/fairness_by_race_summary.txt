@@ -1,0 +1,8 @@
+Fairness by race summary
+   model  applicant_race_1       race_label  n_rows  n_positive  n_negative  accuracy      tpr      fpr  tpr_gap  fpr_gap
+Baseline                 2            Asian     149          51          98  0.841267 0.823529 0.122449 0.254902 0.049196
+Baseline                 3 African American    3223         561        2662  0.841267 0.568627 0.073253 0.254902 0.049196
+Baseline                 5            White   13329        3839        9490  0.841267 0.682730 0.102740 0.254902 0.049196
+Debiased                 2            Asian     149          51          98  0.836477 0.705882 0.102041 0.071301 0.006811
+Debiased                 3 African American    3223         561        2662  0.836477 0.634581 0.104057 0.071301 0.006811
+Debiased                 5            White   13329        3839        9490  0.836477 0.689763 0.108851 0.071301 0.006811

@@ -1,0 +1,10 @@
+metric,value
+accuracy,0.8195767444042983
+balanced_accuracy,0.7615743749439887
+roc_auc,0.7615743749439887
+sex_demographic_parity_gap,0.0687702528266605
+sex_equal_opportunity_gap,0.046083045969778524
+race_demographic_parity_gap,0.17935231023102308
+race_equal_opportunity_gap,0.14367176634214185
+age_demographic_parity_gap,0.15506917428032693
+age_equal_opportunity_gap,0.45596475142624293
