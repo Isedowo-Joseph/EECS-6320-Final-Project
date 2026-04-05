@@ -1,0 +1,11 @@
+Audit notes
+-----------
+1. The current notebook aligns training features to test features in the MMD objective.
+2. The notebook ROC AUC is computed on hard class labels; this script uses probabilities instead.
+3. Use these outputs to inspect the current implementation, not as a final leak-free benchmark.
+
+Key files
+---------
+- MMD_Distribution_Outputs/analysis_full/comparison_metrics.csv
+- MMD_Distribution_Outputs/analysis_full/bootstrap_metric_cis.csv
+- MMD_Distribution_Outputs/analysis_full/before_after_predictions.csv

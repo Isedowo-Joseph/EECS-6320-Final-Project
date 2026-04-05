@@ -1,0 +1,17 @@
+metric,value
+accuracy,0.8180751724461546
+balanced_accuracy,0.7520740545241875
+roc_auc,0.8866557011281508
+brier_score,0.11966876680113407
+positive_rate,0.2414246163952888
+mean_score,0.249931201338768
+mean_confidence,0.8150327801704407
+sex_demographic_parity_gap,0.06496630164644729
+sex_equal_opportunity_gap,0.03642857442506309
+sex_false_positive_rate_gap,0.01262311182786574
+race_demographic_parity_gap,0.19284662841284128
+race_equal_opportunity_gap,0.1714881780250347
+race_false_positive_rate_gap,0.0855120390783729
+age_demographic_parity_gap,0.17519809547235451
+age_equal_opportunity_gap,0.4755246536267319
+age_false_positive_rate_gap,0.09496793729960813
