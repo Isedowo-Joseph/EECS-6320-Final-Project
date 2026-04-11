@@ -1,0 +1,31 @@
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local datasets / secrets
+21stMortgageCorporation_header.csv
+*.env
+
+# Generated experiment outputs
+MMD_Distribution_Outputs/
+
+# Local analysis artifacts
+*.log

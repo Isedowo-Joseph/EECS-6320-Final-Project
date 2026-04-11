@@ -1,8 +1,0 @@
-Improved fairness implementation
--------------------------------
-This run compares the original baseline, the current test-alignment MMD, and an improved fairness-aware MMD.
-The improved method trains only on the training split and applies:
-- conditional hidden-state MMD across sensitive groups within label classes
-- score-level parity penalties across sex, race, and age
-
-Outputs saved to: /Users/muhammadasad/Downloads/Asad - MMD Distribution Alignment/MMD_Distribution_Outputs/fair_mmd_quick

@@ -27,20 +27,18 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from analyze_mmd_alignment import (
-    AGE_ORDER,
     Model,
     RunOutputs,
     SENSITIVE_COLS,
     SEED,
     evaluate_predictions,
+    fairness_gap_summary,
+    fairness_table,
     load_clean_data,
     make_eval_frame,
-    make_loader,
     multi_kernel_mmd,
     plot_calibration_curve,
-    plot_confidence_histogram,
     plot_confidence_margin,
-    plot_group_selection_rates,
     plot_training_losses,
     preprocess,
     save_run_artifacts,
@@ -287,16 +285,125 @@ def bootstrap_cis(y_true: np.ndarray, scores: np.ndarray, iterations: int, seed:
     return pd.DataFrame(rows)
 
 
-def plot_three_way_metrics(comparison_df: pd.DataFrame, outpath: Path) -> None:
+def bootstrap_fairness_cis(eval_df: pd.DataFrame, iterations: int, seed: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    rng = np.random.default_rng(seed)
+    n = len(eval_df)
+    gap_rows = []
+    selection_rows = []
+
+    for _ in range(iterations):
+        idx = rng.integers(0, n, size=n)
+        sample = eval_df.iloc[idx].reset_index(drop=True)
+        for attribute, group_col in [
+            ("sex", "sex_label"),
+            ("race", "race_label"),
+            ("age", "applicant_age"),
+        ]:
+            table = fairness_table(sample, group_col)
+            summary = fairness_gap_summary(table)
+            for metric_name, value in summary.items():
+                gap_rows.append(
+                    {
+                        "metric": f"{attribute}_{metric_name}",
+                        "value": float(value),
+                    }
+                )
+            for _, row in table.iterrows():
+                selection_rows.append(
+                    {
+                        "attribute": attribute,
+                        "group": row["group"],
+                        "metric": "selection_rate",
+                        "value": float(row["selection_rate"]),
+                    }
+                )
+
+    gap_df = pd.DataFrame(gap_rows)
+    gap_ci = (
+        gap_df.groupby("metric")["value"]
+        .agg(
+            mean="mean",
+            ci_lower_95=lambda x: float(np.quantile(x, 0.025)),
+            ci_upper_95=lambda x: float(np.quantile(x, 0.975)),
+        )
+        .reset_index()
+    )
+
+    selection_df = pd.DataFrame(selection_rows)
+    selection_ci = (
+        selection_df.groupby(["attribute", "group", "metric"])["value"]
+        .agg(
+            mean="mean",
+            ci_lower_95=lambda x: float(np.quantile(x, 0.025)),
+            ci_upper_95=lambda x: float(np.quantile(x, 0.975)),
+        )
+        .reset_index()
+    )
+    return gap_ci, selection_ci
+
+
+def build_yerr(values: np.ndarray, lowers: np.ndarray, uppers: np.ndarray) -> np.ndarray:
+    lower_err = np.maximum(values - lowers, 0.0)
+    upper_err = np.maximum(uppers - values, 0.0)
+    return np.vstack([lower_err, upper_err])
+
+
+def plot_three_way_metrics(comparison_df: pd.DataFrame, ci_df: pd.DataFrame, outpath: Path) -> None:
     metric_order = ["accuracy", "balanced_accuracy", "roc_auc", "brier_score", "mean_confidence"]
     subset = comparison_df[comparison_df["metric"].isin(metric_order)].copy()
+    baseline_ci = ci_df[ci_df["run"] == "baseline"][["metric", "ci_lower_95", "ci_upper_95"]].rename(
+        columns={"ci_lower_95": "baseline_ci_lower", "ci_upper_95": "baseline_ci_upper"}
+    )
+    mmd_ci = ci_df[ci_df["run"] == "mmd"][["metric", "ci_lower_95", "ci_upper_95"]].rename(
+        columns={"ci_lower_95": "mmd_ci_lower", "ci_upper_95": "mmd_ci_upper"}
+    )
+    fair_ci = ci_df[ci_df["run"] == "fair_mmd"][["metric", "ci_lower_95", "ci_upper_95"]].rename(
+        columns={"ci_lower_95": "fair_ci_lower", "ci_upper_95": "fair_ci_upper"}
+    )
+    subset = subset.merge(baseline_ci, on="metric").merge(mmd_ci, on="metric").merge(fair_ci, on="metric")
     x = np.arange(len(subset))
     width = 0.25
 
     fig, ax = plt.subplots(figsize=(11, 5))
-    ax.bar(x - width, subset["baseline"], width=width, label="Baseline", color="#1f77b4")
-    ax.bar(x, subset["mmd"], width=width, label="Current MMD", color="#ff7f0e")
-    ax.bar(x + width, subset["fair_mmd"], width=width, label="Improved Fair MMD", color="#2ca02c")
+    ax.bar(
+        x - width,
+        subset["baseline"],
+        width=width,
+        label="Baseline",
+        color="#1f77b4",
+        yerr=build_yerr(
+            subset["baseline"].to_numpy(),
+            subset["baseline_ci_lower"].to_numpy(),
+            subset["baseline_ci_upper"].to_numpy(),
+        ),
+        capsize=3,
+    )
+    ax.bar(
+        x,
+        subset["mmd"],
+        width=width,
+        label="Current MMD",
+        color="#ff7f0e",
+        yerr=build_yerr(
+            subset["mmd"].to_numpy(),
+            subset["mmd_ci_lower"].to_numpy(),
+            subset["mmd_ci_upper"].to_numpy(),
+        ),
+        capsize=3,
+    )
+    ax.bar(
+        x + width,
+        subset["fair_mmd"],
+        width=width,
+        label="Improved Fair MMD",
+        color="#2ca02c",
+        yerr=build_yerr(
+            subset["fair_mmd"].to_numpy(),
+            subset["fair_ci_lower"].to_numpy(),
+            subset["fair_ci_upper"].to_numpy(),
+        ),
+        capsize=3,
+    )
     ax.set_xticks(x)
     ax.set_xticklabels(subset["metric"], rotation=20)
     ax.set_ylabel("Value")
@@ -327,20 +434,131 @@ def plot_confidence_histogram_two_runs(
     plt.close(fig)
 
 
-def plot_three_way_gaps(comparison_df: pd.DataFrame, outpath: Path) -> None:
+def plot_three_way_gaps(comparison_df: pd.DataFrame, gap_ci_df: pd.DataFrame, outpath: Path) -> None:
     subset = comparison_df[comparison_df["metric"].str.endswith("_gap")].copy()
     subset["label"] = subset["metric"].str.replace("_", " ")
+    baseline_ci = gap_ci_df[gap_ci_df["run"] == "baseline"][["metric", "ci_lower_95", "ci_upper_95"]].rename(
+        columns={"ci_lower_95": "baseline_ci_lower", "ci_upper_95": "baseline_ci_upper"}
+    )
+    mmd_ci = gap_ci_df[gap_ci_df["run"] == "mmd"][["metric", "ci_lower_95", "ci_upper_95"]].rename(
+        columns={"ci_lower_95": "mmd_ci_lower", "ci_upper_95": "mmd_ci_upper"}
+    )
+    fair_ci = gap_ci_df[gap_ci_df["run"] == "fair_mmd"][["metric", "ci_lower_95", "ci_upper_95"]].rename(
+        columns={"ci_lower_95": "fair_ci_lower", "ci_upper_95": "fair_ci_upper"}
+    )
+    subset = subset.merge(baseline_ci, on="metric").merge(mmd_ci, on="metric").merge(fair_ci, on="metric")
     x = np.arange(len(subset))
     width = 0.25
 
     fig, ax = plt.subplots(figsize=(14, 6))
-    ax.bar(x - width, subset["baseline"], width=width, label="Baseline", color="#1f77b4")
-    ax.bar(x, subset["mmd"], width=width, label="Current MMD", color="#ff7f0e")
-    ax.bar(x + width, subset["fair_mmd"], width=width, label="Improved Fair MMD", color="#2ca02c")
+    ax.bar(
+        x - width,
+        subset["baseline"],
+        width=width,
+        label="Baseline",
+        color="#1f77b4",
+        yerr=build_yerr(
+            subset["baseline"].to_numpy(),
+            subset["baseline_ci_lower"].to_numpy(),
+            subset["baseline_ci_upper"].to_numpy(),
+        ),
+        capsize=3,
+    )
+    ax.bar(
+        x,
+        subset["mmd"],
+        width=width,
+        label="Current MMD",
+        color="#ff7f0e",
+        yerr=build_yerr(
+            subset["mmd"].to_numpy(),
+            subset["mmd_ci_lower"].to_numpy(),
+            subset["mmd_ci_upper"].to_numpy(),
+        ),
+        capsize=3,
+    )
+    ax.bar(
+        x + width,
+        subset["fair_mmd"],
+        width=width,
+        label="Improved Fair MMD",
+        color="#2ca02c",
+        yerr=build_yerr(
+            subset["fair_mmd"].to_numpy(),
+            subset["fair_ci_lower"].to_numpy(),
+            subset["fair_ci_upper"].to_numpy(),
+        ),
+        capsize=3,
+    )
     ax.set_xticks(x)
     ax.set_xticklabels(subset["label"], rotation=35, ha="right")
     ax.set_ylabel("Gap size")
     ax.set_title("Fairness gap comparison")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(outpath, dpi=200)
+    plt.close(fig)
+
+
+def plot_group_selection_rates_with_ci(
+    baseline_tbl: pd.DataFrame,
+    fair_tbl: pd.DataFrame,
+    baseline_ci: pd.DataFrame,
+    fair_ci: pd.DataFrame,
+    title: str,
+    outpath: Path,
+) -> None:
+    merged = baseline_tbl[["group", "selection_rate"]].merge(
+        fair_tbl[["group", "selection_rate"]],
+        on="group",
+        suffixes=("_baseline", "_fair"),
+    )
+    merged = merged.merge(
+        baseline_ci[["group", "ci_lower_95", "ci_upper_95"]].rename(
+            columns={"ci_lower_95": "baseline_ci_lower", "ci_upper_95": "baseline_ci_upper"}
+        ),
+        on="group",
+    ).merge(
+        fair_ci[["group", "ci_lower_95", "ci_upper_95"]].rename(
+            columns={"ci_lower_95": "fair_ci_lower", "ci_upper_95": "fair_ci_upper"}
+        ),
+        on="group",
+    )
+    x = np.arange(len(merged))
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.bar(
+        x - width / 2,
+        merged["selection_rate_baseline"],
+        width=width,
+        label="Baseline",
+        color="#1f77b4",
+        yerr=build_yerr(
+            merged["selection_rate_baseline"].to_numpy(),
+            merged["baseline_ci_lower"].to_numpy(),
+            merged["baseline_ci_upper"].to_numpy(),
+        ),
+        capsize=3,
+    )
+    ax.bar(
+        x + width / 2,
+        merged["selection_rate_fair"],
+        width=width,
+        label="Improved Fair MMD",
+        color="#2ca02c",
+        yerr=build_yerr(
+            merged["selection_rate_fair"].to_numpy(),
+            merged["fair_ci_lower"].to_numpy(),
+            merged["fair_ci_upper"].to_numpy(),
+        ),
+        capsize=3,
+    )
+    ax.set_xticks(x)
+    ax.set_xticklabels(merged["group"], rotation=25)
+    ax.set_title(title)
+    ax.set_ylabel("Selection rate")
+    ax.set_ylim(0, 1)
     ax.legend()
     fig.tight_layout()
     fig.savefig(outpath, dpi=200)
@@ -422,11 +640,23 @@ def main() -> None:
     predictions.to_csv(args.outdir / "predictions_three_way.csv", index=False)
 
     ci_frames = []
+    gap_ci_frames = []
+    selection_ci_frames = []
     for idx, (run_name, outputs) in enumerate(runs.items()):
         ci_df = bootstrap_cis(y_test.to_numpy(), outputs.scores, args.bootstrap_iterations, seed=SEED + idx)
         ci_df.insert(0, "run", run_name)
         ci_frames.append(ci_df)
-    pd.concat(ci_frames, ignore_index=True).to_csv(args.outdir / "bootstrap_metric_cis.csv", index=False)
+        gap_ci_df, selection_ci_df = bootstrap_fairness_cis(eval_by_run[run_name], args.bootstrap_iterations, seed=SEED + 10 + idx)
+        gap_ci_df.insert(0, "run", run_name)
+        selection_ci_df.insert(0, "run", run_name)
+        gap_ci_frames.append(gap_ci_df)
+        selection_ci_frames.append(selection_ci_df)
+    metric_ci_df = pd.concat(ci_frames, ignore_index=True)
+    metric_ci_df.to_csv(args.outdir / "bootstrap_metric_cis.csv", index=False)
+    gap_ci_df = pd.concat(gap_ci_frames, ignore_index=True)
+    gap_ci_df.to_csv(args.outdir / "bootstrap_gap_cis.csv", index=False)
+    selection_ci_df = pd.concat(selection_ci_frames, ignore_index=True)
+    selection_ci_df.to_csv(args.outdir / "bootstrap_selection_rate_cis.csv", index=False)
 
     baseline_history = pd.DataFrame(baseline_outputs.history)
     current_mmd_history = pd.DataFrame(current_mmd_outputs.history)
@@ -473,24 +703,30 @@ def main() -> None:
     )
     plot_calibration_curve(calibration_df, args.outdir / "calibration_curve_baseline_vs_fair.png")
 
-    plot_three_way_metrics(comparison, args.outdir / "performance_three_way.png")
-    plot_three_way_gaps(comparison, args.outdir / "fairness_gaps_three_way.png")
+    plot_three_way_metrics(comparison, metric_ci_df, args.outdir / "performance_three_way.png")
+    plot_three_way_gaps(comparison, gap_ci_df, args.outdir / "fairness_gaps_three_way.png")
 
-    plot_group_selection_rates(
+    plot_group_selection_rates_with_ci(
         pd.read_csv(args.outdir / "baseline/fairness_by_sex.csv"),
         pd.read_csv(args.outdir / "fair_mmd/fairness_by_sex.csv"),
+        selection_ci_df[(selection_ci_df["run"] == "baseline") & (selection_ci_df["attribute"] == "sex")],
+        selection_ci_df[(selection_ci_df["run"] == "fair_mmd") & (selection_ci_df["attribute"] == "sex")],
         "Selection rate by sex: baseline vs improved Fair MMD",
         args.outdir / "selection_rate_by_sex_baseline_vs_fair.png",
     )
-    plot_group_selection_rates(
+    plot_group_selection_rates_with_ci(
         pd.read_csv(args.outdir / "baseline/fairness_by_race.csv"),
         pd.read_csv(args.outdir / "fair_mmd/fairness_by_race.csv"),
+        selection_ci_df[(selection_ci_df["run"] == "baseline") & (selection_ci_df["attribute"] == "race")],
+        selection_ci_df[(selection_ci_df["run"] == "fair_mmd") & (selection_ci_df["attribute"] == "race")],
         "Selection rate by race: baseline vs improved Fair MMD",
         args.outdir / "selection_rate_by_race_baseline_vs_fair.png",
     )
-    plot_group_selection_rates(
+    plot_group_selection_rates_with_ci(
         pd.read_csv(args.outdir / "baseline/fairness_by_age.csv"),
         pd.read_csv(args.outdir / "fair_mmd/fairness_by_age.csv"),
+        selection_ci_df[(selection_ci_df["run"] == "baseline") & (selection_ci_df["attribute"] == "age")],
+        selection_ci_df[(selection_ci_df["run"] == "fair_mmd") & (selection_ci_df["attribute"] == "age")],
         "Selection rate by age: baseline vs improved Fair MMD",
         args.outdir / "selection_rate_by_age_baseline_vs_fair.png",
     )
